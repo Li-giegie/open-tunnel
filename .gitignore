@@ -1,0 +1,4 @@
+*.exe
+open-tunnel
+.*
+!.gitignore
