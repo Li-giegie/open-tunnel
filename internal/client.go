@@ -4,66 +4,94 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/songgao/water"
 	"github.com/songgao/water/waterutil"
+	"io"
 	"log"
 	"net"
-	"net/netip"
 	"time"
 )
 
+type Interface interface {
+	Name() string
+	io.ReadWriteCloser
+}
+
 type CliCfg struct {
-	Addr      string
-	Username  string
-	Password  string
-	Keepalive time.Duration
-	Timeout   time.Duration
+	InterfaceName string
+	InterfaceAddr string
+	InterfaceMTU  int
+	Addr          string
+	Username      string
+	Password      string
+	Keepalive     time.Duration
+	Timeout       time.Duration
 }
 
 func NewClient(c CliCfg) *Client {
 	return &Client{
-		addr:       c.Addr,
-		username:   c.Username,
-		password:   c.Password,
-		updateTime: time.Now(),
-		keepalive:  c.Keepalive,
-		timeout:    c.Timeout,
+		addr:          c.Addr,
+		username:      c.Username,
+		password:      c.Password,
+		updateTime:    time.Now(),
+		keepalive:     c.Keepalive,
+		timeout:       c.Timeout,
+		interfaceAddr: c.InterfaceAddr,
+		interfaceMTU:  c.InterfaceMTU,
+		interfaceName: c.InterfaceName,
 	}
 }
 
 type Client struct {
-	addr       string
-	username   string
-	password   string
-	sessionId  uint64
-	updateTime time.Time
-	keepalive  time.Duration
-	timeout    time.Duration
-	ctx        context.Context
-	cancel     context.CancelFunc
+	addr          string
+	username      string
+	password      string
+	sessionId     uint64
+	updateTime    time.Time
+	keepalive     time.Duration
+	timeout       time.Duration
+	ctx           context.Context
+	cancel        context.CancelFunc
+	interfaceName string
+	interfaceAddr string
+	interfaceMTU  int
 }
 
 func (c *Client) Serve(ctx context.Context) error {
-	addrPort, err := netip.ParseAddrPort(c.addr)
+	addr, err := net.ResolveUDPAddr("udp", c.addr)
 	if err != nil {
 		return err
 	}
-	conn, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(addrPort))
+	log.Println("建立连接")
+	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-
+	log.Println("建立完成")
 	if err = c.Auth(conn); err != nil {
 		return err
 	}
-
-	iface, err := water.New(water.Config{DeviceType: water.TUN})
+	log.Println("创建网卡")
+	iface, err := CreateInterface(c.interfaceName)
 	if err != nil {
 		return err
 	}
 	defer iface.Close()
-
+	log.Println("创建网卡完成")
+	if len(c.interfaceAddr) > 0 {
+		ip, ipNet, err := net.ParseCIDR(c.interfaceAddr)
+		if err != nil {
+			return err
+		}
+		if err = SetIPv4Address(c.interfaceName, ip, ipNet.Mask); err != nil {
+			return err
+		}
+	}
+	if c.interfaceMTU != 0 {
+		if err = SetMTU(c.interfaceName, c.interfaceMTU); err != nil {
+			return err
+		}
+	}
 	c.ctx, c.cancel = context.WithCancel(context.TODO())
 	defer c.cancel()
 
@@ -138,7 +166,7 @@ func (c *Client) Auth(conn *net.UDPConn) error {
 
 	select {
 	case <-timeout:
-		return errors.New("timeout")
+		return errors.New("auth timeout")
 	case err := <-done:
 		return err
 	}
@@ -180,7 +208,7 @@ func (c *Client) handleHealth(conn *net.UDPConn) error {
 	}
 }
 
-func (c *Client) handleConn(conn *net.UDPConn, iface *water.Interface) error {
+func (c *Client) handleConn(conn *net.UDPConn, iface Interface) error {
 	c.updateTime = time.Now()
 	buffer := make([]byte, 1500)
 	writeBuffer := make([]byte, 1500)
@@ -241,7 +269,7 @@ func (c *Client) handleConn(conn *net.UDPConn, iface *water.Interface) error {
 	}
 }
 
-func (c *Client) handleIface(conn *net.UDPConn, iface *water.Interface) error {
+func (c *Client) handleIface(conn *net.UDPConn, iface Interface) error {
 	buffer := make([]byte, 1500)
 	writeBuffer := make([]byte, 1500)
 	packet := new(Packet)

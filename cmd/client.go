@@ -7,7 +7,6 @@ import (
 	"context"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -23,6 +22,9 @@ var (
 	clientPassword string
 	keepalive      time.Duration
 	timeout        time.Duration
+	interfaceName  string
+	interfaceAddr  string
+	interfaceMTU   int
 )
 
 var clientCmd = &cobra.Command{
@@ -31,11 +33,14 @@ var clientCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		log.SetFlags(log.Llongfile | log.Lshortfile | log.LstdFlags)
 		cli := internal.NewClient(internal.CliCfg{
-			Addr:      clientAddr,
-			Username:  clientUsername,
-			Password:  clientPassword,
-			Keepalive: keepalive,
-			Timeout:   timeout,
+			Addr:          clientAddr,
+			Username:      clientUsername,
+			Password:      clientPassword,
+			Keepalive:     keepalive,
+			Timeout:       timeout,
+			InterfaceName: interfaceName,
+			InterfaceAddr: interfaceAddr,
+			InterfaceMTU:  interfaceMTU,
 		})
 
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -59,21 +64,7 @@ func init() {
 	clientCmd.Flags().StringVar(&clientPassword, "password", "", "auth password")
 	clientCmd.Flags().DurationVar(&keepalive, "keepalive", 15*time.Second, "keepalive interval")
 	clientCmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "disconnect timeout without pong")
-
-	clientCmd.Flags().Func("ip", "", func(s string) error {
-		go func() {
-			for _, cmd := range []string{"ip addr add " + s + " dev tun0", "ip link set tun0 up"} {
-				for {
-					time.Sleep(2 * time.Second)
-					out, err := exec.Command("bash", "-c", cmd).CombinedOutput()
-					if err != nil {
-						log.Println(err, string(out), cmd)
-						continue
-					}
-					break
-				}
-			}
-		}()
-		return nil
-	})
+	clientCmd.Flags().StringVar(&interfaceName, "interface-name", "tun0", "interface name")
+	clientCmd.Flags().StringVar(&interfaceAddr, "interface-addr", "192.168.10.1/24", "interface address：192.168.10.1/24")
+	clientCmd.Flags().IntVar(&interfaceMTU, "interface-mtu", 1450, "interface MTU")
 }
