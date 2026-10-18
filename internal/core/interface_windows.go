@@ -1,4 +1,4 @@
-// Package internal 是 golang.zx2c4.com/wintun 底层 API 的易用封装。
+// Package core 是 golang.zx2c4.com/wintun 底层 API 的易用封装。
 //
 // 对外提供:
 //   - Interface 接口: Name() + io.ReadWriteCloser, 阻塞式读写 L3(IPv4/IPv6)数据包
@@ -8,7 +8,7 @@
 // 使用要求:
 //   - 以管理员权限运行(创建/删除网卡、netsh 都需要)
 //   - wintun.dll 放在 exe 同目录或 System32 下
-package internal
+package core
 
 import (
 	"errors"

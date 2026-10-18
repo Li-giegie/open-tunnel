@@ -1,8 +1,9 @@
-package internal
+package core
 
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"hash/maphash"
 	"log"
 	"math/rand/v2"
@@ -18,36 +19,48 @@ type SrvCfg struct {
 	Addr                string
 	CheckHealthInterval time.Duration
 	CheckHealthTimeout  time.Duration
-	Validator           Validator
+	UserStore           UserStore
 }
 
 func NewServer(c SrvCfg) *Server {
 	var h maphash.Hash
 	h.SetSeed(maphash.MakeSeed())
-	return &Server{
-		addr:      c.Addr,
-		Validator: c.Validator,
-		session: &Session{
-			udpAddrSet: make(map[uint64]*SessionEntry),
-			ipSet:      map[uint32]uint64{},
-		},
+	srv := &Server{
+		addr:                c.Addr,
+		UserStore:           c.UserStore,
+		Session:             NewSession(),
 		checkHealthInterval: c.CheckHealthInterval,
 		checkHealthTimeout:  c.CheckHealthTimeout,
 		hash:                h,
+		startTime:           time.Now(),
 	}
+	return srv
 }
 
 type Server struct {
 	addr   string
 	ctx    context.Context
 	cancel context.CancelFunc
-	Validator
-	session              *Session
+	*Session
 	checkHealthInterval  time.Duration
 	checkHealthTimeout   time.Duration
 	broadcastDedupSet    sync.Map
 	broadcastDedupWindow time.Duration // 在该窗口内，同一条消息最多向同一个客户端广播一次。< 0 关闭 == 0 默认值 6s
 	hash                 maphash.Hash
+	routeTable           []*routeEntry
+	routeTableLock       sync.RWMutex
+	startTime            time.Time
+	UserStore
+}
+
+// Addr 返回 UDP 监听地址。
+func (s *Server) Addr() string {
+	return s.addr
+}
+
+// Uptime 返回服务端启动至今的时长。
+func (s *Server) Uptime() time.Duration {
+	return time.Since(s.startTime)
 }
 
 func (s *Server) Serve(ctx context.Context) error {
@@ -95,6 +108,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 
 	go s.clearBroadcastDedupSet()
+
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -120,18 +134,16 @@ func (s *Server) checkHealth() {
 	for {
 		select {
 		case <-ticker.C:
-			s.session.udpAddrSetLock.Lock()
-			s.session.ipSetLock.Lock()
-			for k, entry := range s.session.udpAddrSet {
-				if time.Now().Sub(entry.updateTime) > checkHealthTimeout {
-					delete(s.session.udpAddrSet, k)
-					for _, ip := range entry.ips {
-						delete(s.session.ipSet, binary.BigEndian.Uint32(ip.To4()))
-					}
+			var removeSessionIds []uint64
+			s.RangeSessions(func(sessionId uint64, account string, addr *net.UDPAddr, updateTime time.Time, ips []net.IP) bool {
+				if time.Since(updateTime) > checkHealthTimeout {
+					removeSessionIds = append(removeSessionIds, sessionId)
 				}
+				return true
+			})
+			for _, id := range removeSessionIds {
+				s.RemoveSession(id)
 			}
-			s.session.ipSetLock.Unlock()
-			s.session.udpAddrSetLock.Unlock()
 		case <-s.ctx.Done():
 			return
 		}
@@ -151,21 +163,23 @@ func (s *Server) Handle(ctx *Context) error {
 			log.Println(err)
 			return nil
 		}
-		if s.Validator != nil {
-			if !s.Validator.ValidUsernamePassword(req.Username, req.Password) {
+		if s.UserStore != nil {
+			if err = s.UserStore.VerifyAccountPassword(req.Account, req.Password); err != nil {
 				return ctx.SendEncoder(CmdAuthResp, &AuthResp{Code: 1})
 			}
 		}
 		sessionId := uint64(binary.BigEndian.Uint32(ctx.UDPAddr.IP.To4()))<<32 | uint64(uint32(ctx.UDPAddr.Port))<<16 | uint64(uint16(rand.Uint()))
-		s.session.SetSessionAddr(sessionId, ctx.UDPAddr)
+		// 同账户重新认证时清理旧会话，避免遗留会话超时清理时误删新会话的 IP 映射
+		s.RemoveAccountSessions(req.Account)
+		s.CreateSession(req.Account, sessionId, ctx.UDPAddr)
 		return ctx.SendEncoder(CmdAuthResp, &AuthResp{Code: 0, SessionId: sessionId})
 	default:
-		entry, ok := s.session.GetSession(ctx.SessionId)
+		_, ok := s.GetSession(ctx.SessionId)
 		if !ok {
 			log.Printf("session id %d invalid  %v\n", ctx.SessionId, ctx.UDPAddr.String())
+			ctx.SendTo(CmdSessionInvalid, nil)
 			return nil
 		}
-		entry.updateTime = time.Now()
 
 		switch ctx.Cmd {
 		case CmdForward:
@@ -176,24 +190,30 @@ func (s *Server) Handle(ctx *Context) error {
 			sourceIp := waterutil.IPv4Source(ctx.Data).To4()
 			destIp := waterutil.IPv4Destination(ctx.Data).To4()
 
-			s.session.SetSessionIP(ctx.SessionId, sourceIp)
+			s.SetSessionIP(ctx.SessionId, sourceIp)
 
-			udpAddr, ok := s.session.GetSessionUDPAddrByIP(destIp)
-			if !ok {
-				log.Println("Forwarding address not found", "src", sourceIp.String(), "dest", destIp.String())
-				return s.Broadcast(ctx.UDPConn, ctx.UDPAddr, (&Packet{Cmd: CmdQuestionIP, SessionId: 0, Data: destIp}).Encode(ctx.WriteBuffer[:0]))
+			var udpAddr *net.UDPAddr
+			if udpAddr, ok = s.GetSessionUDPAddrByIP(destIp); !ok {
+				via, viaExist := s.GetIPV4Route(destIp)
+				if viaExist {
+					udpAddr, ok = s.GetSessionUDPAddrByIP(via)
+				}
+				if !viaExist || !ok {
+					log.Println("Forwarding address not found via invalid", "src", sourceIp.String(), "dest", destIp.String())
+					return s.Broadcast(ctx.UDPConn, ctx.UDPAddr, (&Packet{Cmd: CmdQuestionIP, SessionId: 0, Data: destIp}).Encode(ctx.WriteBuffer[:0]))
+				}
 			}
 			_, err := ctx.UDPConn.WriteToUDP(ctx.ReadBuffer[:ctx.PacketSize], udpAddr)
 			return err
 		case CmdPing:
-			s.session.SetSessionAddr(ctx.SessionId, ctx.UDPAddr)
+			s.SetSessionAddr(ctx.SessionId, ctx.UDPAddr)
 			return ctx.SendTo(CmdPong, nil)
 		case CmdAnswerIP:
 			if len(ctx.Data) != 4 {
 				log.Println("Answer IP length invalid")
 				return nil
 			}
-			s.session.SetSessionIP(ctx.SessionId, net.IPv4(ctx.Data[0], ctx.Data[1], ctx.Data[2], ctx.Data[3]))
+			s.SetSessionIP(ctx.SessionId, net.IPv4(ctx.Data[0], ctx.Data[1], ctx.Data[2], ctx.Data[3]))
 			return nil
 		default:
 			log.Println("Unknown command:", ctx.Cmd)
@@ -229,10 +249,10 @@ func (s *Server) clearBroadcastDedupSet() {
 }
 
 func (s *Server) Broadcast(conn *net.UDPConn, src *net.UDPAddr, data []byte) error {
-	s.session.udpAddrSetLock.RLock()
-	defer s.session.udpAddrSetLock.RUnlock()
+	s.udpAddrSetLock.RLock()
+	defer s.udpAddrSetLock.RUnlock()
 
-	for _, entry := range s.session.udpAddrSet {
+	for _, entry := range s.udpAddrSet {
 		if !entry.addr.IP.Equal(src.IP) {
 			if dw := s.broadcastDedupWindow; dw > -1 {
 				s.hash.Reset()
@@ -265,6 +285,79 @@ func (s *Server) Broadcast(conn *net.UDPConn, src *net.UDPAddr, data []byte) err
 		}
 	}
 	return nil
+}
+
+type routeEntry struct {
+	dst *net.IPNet
+	via net.IP
+}
+
+func (s *Server) AddIPV4Route(dst *net.IPNet, via net.IP) error {
+	if dst.IP.To4() == nil {
+		return errors.New("dst is not ipv4")
+	}
+	if _, bits := dst.Mask.Size(); bits != 32 {
+		return errors.New("mask size is invalid")
+	}
+	if via.To4() == nil {
+		return errors.New("via is not ipv4")
+	}
+	s.routeTableLock.Lock()
+	defer s.routeTableLock.Unlock()
+	for _, entry := range s.routeTable {
+		if entry.dst.String() == dst.String() {
+			return nil
+		}
+	}
+	s.routeTable = append(s.routeTable, &routeEntry{
+		dst: dst,
+		via: via,
+	})
+	return nil
+}
+
+func (s *Server) GetIPV4Route(dst net.IP) (via net.IP, ok bool) {
+	if dst.To4() == nil {
+		return nil, false
+	}
+	matchOnes := -1
+	s.routeTableLock.RLock()
+	for _, entry := range s.routeTable {
+		if entry.dst.Contains(dst) {
+			ok = true
+			if ones, _ := entry.dst.Mask.Size(); ones > matchOnes {
+				matchOnes = ones
+				via = entry.via
+			}
+		}
+	}
+	s.routeTableLock.RUnlock()
+
+	return
+}
+
+func (s *Server) DelIPV4Route(dst *net.IPNet) bool {
+	s.routeTableLock.Lock()
+	defer s.routeTableLock.Unlock()
+	for i, entry := range s.routeTable {
+		if dst.String() == entry.dst.String() {
+			copy(s.routeTable[i:], s.routeTable[i+1:])
+			s.routeTable = s.routeTable[:len(s.routeTable)-1]
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) RangeIPV4Route(fn func(ipNet *net.IPNet, via net.IP) bool) {
+	s.routeTableLock.RLock()
+	defer s.routeTableLock.RUnlock()
+	for _, entry := range s.routeTable {
+		if !fn(entry.dst, entry.via) {
+			return
+		}
+	}
+	return
 }
 
 func (s *Server) Stop() {

@@ -1,4 +1,4 @@
-package internal
+package core
 
 import (
 	"bytes"
@@ -20,6 +20,8 @@ const (
 
 	CmdQuestionIP
 	CmdAnswerIP
+
+	CmdSessionInvalid
 )
 
 func (c Cmd) String() string {
@@ -38,6 +40,8 @@ func (c Cmd) String() string {
 		return "QuestionIP"
 	case CmdAnswerIP:
 		return "AnswerIP"
+	case CmdSessionInvalid:
+		return "SessionInvalid"
 	default:
 		return "Unknown"
 	}
@@ -90,12 +94,12 @@ func NewAuthReq(b []byte) (*AuthReq, error) {
 }
 
 type AuthReq struct {
-	Username string
+	Account  string
 	Password string
 }
 
 func (a *AuthReq) Encode() []byte {
-	return []byte(strings.Join([]string{a.Username, a.Password}, string([]byte{0, 0})))
+	return []byte(strings.Join([]string{a.Account, a.Password}, string([]byte{0, 0})))
 }
 
 func (a *AuthReq) Decode(b []byte) error {
@@ -106,7 +110,7 @@ func (a *AuthReq) Decode(b []byte) error {
 	if n == -1 {
 		return errors.New("Packet length too short")
 	}
-	a.Username = string(b[:n])
+	a.Account = string(b[:n])
 	a.Password = string(b[n+2:])
 	return nil
 }

@@ -1,4 +1,4 @@
-package internal
+package core
 
 import (
 	"context"
@@ -21,7 +21,7 @@ type CliCfg struct {
 	InterfaceAddr string
 	InterfaceMTU  int
 	Addr          string
-	Username      string
+	Account       string
 	Password      string
 	Keepalive     time.Duration
 	Timeout       time.Duration
@@ -30,7 +30,7 @@ type CliCfg struct {
 func NewClient(c CliCfg) *Client {
 	return &Client{
 		addr:          c.Addr,
-		username:      c.Username,
+		account:       c.Account,
 		password:      c.Password,
 		updateTime:    time.Now(),
 		keepalive:     c.Keepalive,
@@ -43,7 +43,7 @@ func NewClient(c CliCfg) *Client {
 
 type Client struct {
 	addr          string
-	username      string
+	account       string
 	password      string
 	sessionId     uint64
 	updateTime    time.Time
@@ -135,7 +135,7 @@ func (c *Client) Auth(conn *net.UDPConn) error {
 	done := make(chan error, 1)
 	go func() {
 		defer close(done)
-		_, err := conn.Write((&Packet{Cmd: CmdAuthReq, SessionId: 0, Data: (&AuthReq{Username: c.username, Password: c.password}).Encode()}).Encode(nil))
+		_, err := conn.Write((&Packet{Cmd: CmdAuthReq, SessionId: 0, Data: (&AuthReq{Account: c.account, Password: c.password}).Encode()}).Encode(nil))
 		if err != nil {
 			done <- err
 			return
@@ -193,11 +193,13 @@ func (c *Client) handleHealth(conn *net.UDPConn) error {
 	for {
 		select {
 		case <-keepaliveTicker.C:
-			_, err := conn.Write(data)
-			if err != nil {
-				return err
+			if time.Since(c.updateTime) > keepalive {
+				_, err := conn.Write(data)
+				if err != nil {
+					return err
+				}
+				log.Println("发送ping")
 			}
-			log.Println("发送ping")
 		case <-timeoutTicker.C:
 			if time.Now().Sub(c.updateTime) > timeout {
 				return errors.New("health err: timeout")
@@ -227,6 +229,8 @@ func (c *Client) handleConn(conn *net.UDPConn, iface Interface) error {
 			if _, err = iface.Write(packet.Data); err != nil {
 				return err
 			}
+		case CmdSessionInvalid:
+			return errors.New("session invalid")
 		case CmdPong:
 			c.updateTime = time.Now()
 		case CmdQuestionIP:

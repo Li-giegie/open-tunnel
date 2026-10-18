@@ -13,12 +13,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"open-tunnel/internal"
+	"open-tunnel/internal/core"
 )
 
 var (
 	clientAddr     string
-	clientUsername string
+	clientAccount  string
 	clientPassword string
 	keepalive      time.Duration
 	timeout        time.Duration
@@ -32,9 +32,9 @@ var clientCmd = &cobra.Command{
 	Short: "Start the tunnel client",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		log.SetFlags(log.Llongfile | log.Lshortfile | log.LstdFlags)
-		cli := internal.NewClient(internal.CliCfg{
+		cli := core.NewClient(core.CliCfg{
 			Addr:          clientAddr,
-			Username:      clientUsername,
+			Account:       clientAccount,
 			Password:      clientPassword,
 			Keepalive:     keepalive,
 			Timeout:       timeout,
@@ -60,7 +60,7 @@ func init() {
 	rootCmd.AddCommand(clientCmd)
 
 	clientCmd.Flags().StringVar(&clientAddr, "addr", "127.0.0.1:9000", "server UDP address")
-	clientCmd.Flags().StringVar(&clientUsername, "username", "", "auth username")
+	clientCmd.Flags().StringVar(&clientAccount, "account", "", "auth account")
 	clientCmd.Flags().StringVar(&clientPassword, "password", "", "auth password")
 	clientCmd.Flags().DurationVar(&keepalive, "keepalive", 15*time.Second, "keepalive interval")
 	clientCmd.Flags().DurationVar(&timeout, "timeout", 2*time.Minute, "disconnect timeout without pong")

@@ -11,6 +11,7 @@
 - 客户端通过心跳维持会话，服务端会清理超时会话。
 - 跨平台支持：Linux 使用内核 TUN 网卡；Windows **依赖 [Wintun](https://www.wintun.net/) 虚拟网卡**（运行时加载 `wintun.dll`，缺少该文件客户端无法启动）。
 - 可在客户端启动时配置 TUN 网卡的 IPv4 地址和 MTU。
+- Web 控制台（`--control` 开启）：可视化管理认证账户、路由表，监控在线会话与服务状态。
 
 ## 通信流程
 
@@ -114,12 +115,48 @@ GOOS=windows GOARCH=amd64 go build -o open-tunnel.exe .
 在可被客户端访问的主机上运行：
 
 ```sh
-./open-tunnel server --addr 0.0.0.0:9000 --users 'alice:change-me'
+./open-tunnel server --addr 0.0.0.0:9000 --auth-memory --auth-memory-file accounts.txt
 ```
 
-`--users` 可包含多个账号，以逗号分隔，例如 `alice:secret,bob:another-secret`。省略该参数时，服务端不校验用户名和密码。
+服务端支持账户认证：客户端建立连接后需携带账户和密码完成认证，**认证不通过的客户端无法加入服务端节点**。认证通过 `--auth-memory` 显式开启，账户信息仅保存在内存中（重启后失效，未来版本计划支持数据库等持久化存储）。
 
-### 2. 启动客户端
+账户数据不从命令行输入，目前通过 `--auth-memory-file` 指定数据源文件，后续将支持其他方式注入账户。只开启 `--auth-memory` 而不提供数据源时账户列表为空，所有客户端认证都会被拒绝；`--auth-memory-file` 需配合 `--auth-memory` 使用，单独提供时会被忽略。数据源文件每行一条 `账户:密码`，支持 `#` 注释和空行：
+
+```text
+# accounts.txt
+alice:change-me
+bob:another-secret
+```
+
+目前仅支持内存存储认证账户信息（重启后失效），未来版本计划支持数据库等持久化存储。未开启认证时，服务端不校验账户和密码。
+
+### 2. 启动 Web 控制台（可选）
+
+服务端数据面之外还提供 HTTP 控制面，用于可视化管理账户、路由和监控会话：
+
+```sh
+./open-tunnel server --addr 0.0.0.0:9000 \
+  --auth-memory \
+  --control-addr 127.0.0.1:8080 \
+  --control-username admin \
+  --control-password change-me
+```
+
+启动后浏览器访问 `http://127.0.0.1:8080/`，输入控制台账号密码即可使用。控制台包含四个板块：**状态总览**（监听地址、运行时长、会话/路由/账户数量）、**用户管理**（需配合 `--auth-memory`，增删认证账户）、**路由管理**（增删服务端 IPv4 路由表）、**会话监控**（在线客户端的账户、UDP 地址、隧道 IP 和活跃状态，每 5 秒自动刷新，可将客户端踢下线）。
+
+控制面支持 HTTPS：同时提供 `--control-cert` 和 `--control-key`（PEM 格式的证书和私钥）即可，此时访问地址为 `https://…`。自签证书可一键生成：
+
+```sh
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+  -keyout control-key.pem -out control-cert.pem -days 365 -nodes \
+  -subj "/CN=open-tunnel"
+```
+
+> 使用自签证书时浏览器会提示不受信任，属正常现象；如需远程访问，建议改用 CA 签发的证书或置于 TLS 反向代理之后。
+
+> 控制台使用 HTTP Basic Auth；未配置 TLS 时流量为明文 HTTP，默认只监听 `127.0.0.1`。账户变更只影响之后的认证请求，已建立的会话不会被踢出（可通过会话监控手动踢下线：客户端会在下一个心跳周期内收到会话无效通知并退出）。
+
+### 3. 启动客户端
 
 在每台客户端主机上分别运行，并为每台主机分配唯一的隧道 IPv4 地址。以下示例中，服务端地址为 `198.51.100.10:9000`。
 
@@ -128,7 +165,7 @@ Linux 客户端：
 ```sh
 sudo ./open-tunnel client \
   --addr 198.51.100.10:9000 \
-  --username alice \
+  --account alice \
   --password change-me \
   --interface-addr 10.20.0.2/24
 ```
@@ -138,7 +175,7 @@ Windows 客户端（需管理员权限的终端，如 PowerShell）：
 ```powershell
 .\open-tunnel.exe client `
   --addr 198.51.100.10:9000 `
-  --username alice `
+  --account alice `
   --password change-me `
   --interface-name open-tunnel `
   --interface-addr 10.20.0.3/24
@@ -157,16 +194,22 @@ Windows 客户端（需管理员权限的终端，如 PowerShell）：
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--addr` | `0.0.0.0:9000` | UDP 监听地址 |
-| `--users` | 空 | 逗号分隔的 `用户名:密码` 列表；为空时不启用认证 |
+| `--auth-memory` | `false` | 开启账户认证：客户端建立连接后需认证，不通过则无法加入服务端节点；账户信息仅存于内存 |
+| `--auth-memory-file` | 空 | 账户数据源文件，每行一条 `账户:密码`；可选，后续将支持其他注入方式 |
 | `--health-interval` | `1m` | 服务端检查会话健康状态的间隔 |
 | `--health-timeout` | `2m` | 客户端无活动超过此时间后清理会话 |
+| `--control-addr` | 空 | 控制面 HTTP(S) 监听地址，如 `127.0.0.1:8080`；设置后启用控制面 |
+| `--control-username` | 空 | 控制台 Basic Auth 用户名 |
+| `--control-password` | 空 | 控制台 Basic Auth 密码 |
+| `--control-cert` | 空 | TLS 证书 PEM 文件，与 `--control-key` 成对提供时启用 HTTPS |
+| `--control-key` | 空 | TLS 私钥 PEM 文件 |
 
 ### `client`
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `--addr` | `127.0.0.1:9000` | 服务端 UDP 地址 |
-| `--username` | 空 | 认证用户名 |
+| `--account` | 空 | 认证账户 |
 | `--password` | 空 | 认证密码 |
 | `--interface-name` | `tun0` | TUN 网卡名称 |
 | `--interface-addr` | `192.168.10.1/24` | TUN 网卡 IPv4 地址和前缀，例如 `10.20.0.2/24` |

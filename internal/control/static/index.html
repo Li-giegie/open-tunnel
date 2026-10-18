@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>open-tunnel 控制台</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f4f6f9; --panel: #ffffff; --text: #1c2733; --muted: #7b8794;
+    --line: #e3e8ef; --accent: #3565e0; --accent-soft: #eaf0fe;
+    --danger: #d5455c; --ok: #1f9d63; --hover: #f0f4fa;
+    --shadow: 0 1px 3px rgba(16, 30, 54, .08), 0 4px 16px rgba(16, 30, 54, .05);
+    --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141a22; --panel: #1d2530; --text: #e7ecf3; --muted: #8b96a5;
+      --line: #2c3745; --accent: #6d97f5; --accent-soft: #22304a;
+      --danger: #ef7089; --ok: #4ecb8d; --hover: #243040;
+      --shadow: 0 1px 3px rgba(0, 0, 0, .35);
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.55 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+
+  /* ---------- 登录页 ---------- */
+  #loginView {
+    position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    background: var(--bg); z-index: 20;
+  }
+  #loginView[hidden] { display: none; }
+  .login-card {
+    width: 340px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; box-shadow: var(--shadow); padding: 28px;
+  }
+  .login-card h1 { margin: 0 0 4px; font-size: 18px; }
+  .login-card p { margin: 0 0 18px; color: var(--muted); font-size: 12.5px; }
+  .login-card label { display: block; margin: 12px 0 4px; font-size: 12.5px; color: var(--muted); }
+  .login-card input {
+    width: 100%; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: transparent; color: inherit; outline: none;
+  }
+  .login-card input:focus { border-color: var(--accent); }
+  .login-card .btn { width: 100%; margin-top: 18px; }
+  .login-error { color: var(--danger); font-size: 12.5px; min-height: 18px; margin-top: 10px; }
+
+  /* ---------- 主布局 ---------- */
+  #appView { display: flex; min-height: 100vh; }
+  #appView[hidden] { display: none; }
+  aside {
+    width: 200px; flex: none; background: var(--panel); border-right: 1px solid var(--line);
+    padding: 18px 12px; display: flex; flex-direction: column; gap: 4px;
+    position: sticky; top: 0; height: 100vh;
+  }
+  .brand { display: flex; align-items: center; gap: 8px; padding: 4px 10px 14px; }
+  .brand .dot {
+    width: 10px; height: 10px; border-radius: 3px; background: var(--accent); flex: none;
+  }
+  .brand span { font-weight: 650; letter-spacing: .2px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 8px;
+    cursor: pointer; color: var(--muted); border: none; background: none; width: 100%;
+    font: inherit; text-align: left;
+  }
+  .nav-item:hover { background: var(--hover); color: var(--text); }
+  .nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .nav-item .badge {
+    margin-left: auto; background: var(--accent); color: #fff; border-radius: 99px;
+    font-size: 11px; padding: 1px 7px; min-width: 20px; text-align: center;
+  }
+  .nav-item.active .badge { background: var(--accent); }
+  .spacer { flex: 1; }
+  .conn { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: 12px; color: var(--muted); }
+  .conn .led { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .conn.ok .led { background: var(--ok); }
+  .conn.err .led { background: var(--danger); }
+  #logout { color: var(--danger); }
+
+  main { flex: 1; padding: 22px 26px; max-width: 1060px; }
+  .page[hidden] { display: none; }
+  .page-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px; }
+  .page-head h2 { margin: 0; font-size: 17px; }
+  .page-head .sub { color: var(--muted); font-size: 12.5px; }
+
+  /* ---------- 组件 ---------- */
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    box-shadow: var(--shadow); padding: 16px 18px; margin-bottom: 16px;
+  }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile {
+    border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px;
+    background: var(--panel);
+  }
+  .tile .k { font-size: 12px; color: var(--muted); }
+  .tile .v { font-size: 19px; font-weight: 650; margin-top: 3px; font-variant-numeric: tabular-nums; word-break: break-all; }
+  .tile .v.on { color: var(--ok); }
+  .tile .v.off { color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); word-break: break-all; }
+  th { color: var(--muted); font-weight: 600; font-size: 12.5px; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--hover); }
+  .empty { color: var(--muted); text-align: center; padding: 18px 0 !important; }
+
+  form.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; margin-bottom: 14px; }
+  form.row label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  form.row input {
+    padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: transparent; color: inherit; outline: none; min-width: 150px;
+  }
+  form.row input:focus { border-color: var(--accent); }
+
+  .btn {
+    padding: 8px 16px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel); color: var(--text); cursor: pointer; font: inherit;
+  }
+  .btn:hover { background: var(--hover); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  .btn.mini { padding: 3px 10px; font-size: 12px; border-radius: 6px; color: var(--danger); }
+  .btn.mini:hover { background: var(--danger); color: #fff; border-color: var(--danger); }
+
+  .notice {
+    display: none; margin-top: 12px; padding: 9px 12px; border-radius: 8px;
+    background: var(--accent-soft); color: var(--accent); font-size: 12.5px;
+  }
+  .notice.show { display: block; }
+
+  /* toast 通知 */
+  #toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 30; }
+  .toast {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-left: 3px solid var(--accent); border-radius: 8px; box-shadow: var(--shadow);
+    padding: 10px 14px; font-size: 13px; max-width: 320px;
+    animation: slide-in .18s ease-out;
+  }
+  .toast.err { border-left-color: var(--danger); }
+  @keyframes slide-in { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+  @media (max-width: 720px) {
+    #appView { flex-direction: column; }
+    aside { width: 100%; height: auto; position: static; flex-direction: row; flex-wrap: wrap; align-items: center; }
+    .brand { padding: 4px 8px; }
+    .spacer { flex: 1; }
+    main { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- 登录页 -->
+<div id="loginView">
+  <div class="login-card">
+    <h1>open-tunnel 控制台</h1>
+    <p>请输入控制台账号密码登录</p>
+    <label for="user">用户名</label>
+    <input id="user" autocomplete="username" autofocus>
+    <label for="pass">密码</label>
+    <input id="pass" type="password" autocomplete="current-password">
+    <div class="login-error" id="loginError"></div>
+    <button class="btn primary" id="loginBtn">登 录</button>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div id="appView" hidden>
+  <aside>
+    <div class="brand"><div class="dot"></div><span>open-tunnel</span></div>
+    <button class="nav-item active" data-page="status">状态总览</button>
+    <button class="nav-item" data-page="users">用户管理</button>
+    <button class="nav-item" data-page="routes">路由管理</button>
+    <button class="nav-item" data-page="sessions">会话监控<span class="badge" id="sessionBadge" hidden>0</span></button>
+    <div class="spacer"></div>
+    <div class="conn" id="conn"><div class="led"></div><span id="connText">连接中…</span></div>
+    <button class="nav-item" id="logout">退出登录</button>
+  </aside>
+
+  <main>
+    <section class="page" id="page-status">
+      <div class="page-head"><h2>状态总览</h2><span class="sub">服务端运行状态</span></div>
+      <div class="tiles" id="tiles"></div>
+    </section>
+
+    <section class="page" id="page-users" hidden>
+      <div class="page-head"><h2>用户管理</h2><span class="sub">隧道认证账户</span></div>
+      <div class="card">
+        <form class="row" id="userForm">
+          <div><label>账户</label><input id="newAccount"></div>
+          <div><label>密码</label><input id="newPassword" type="password"></div>
+          <button class="btn primary" type="submit">添加账户</button>
+        </form>
+        <table>
+          <thead><tr><th>账户</th><th style="width:80px">操作</th></tr></thead>
+          <tbody id="userRows"></tbody>
+        </table>
+        <div class="notice" id="userNotice">认证未开启（启动服务端时加 --auth-memory），账户操作不可用</div>
+      </div>
+    </section>
+
+    <section class="page" id="page-routes" hidden>
+      <div class="page-head"><h2>路由管理</h2><span class="sub">服务端 IPv4 路由表</span></div>
+      <div class="card">
+        <form class="row" id="routeForm">
+          <div><label>目的网段</label><input id="newDst" placeholder="10.0.0.0/24"></div>
+          <div><label>下一跳</label><input id="newVia" placeholder="10.20.0.2"></div>
+          <button class="btn primary" type="submit">添加路由</button>
+        </form>
+        <table>
+          <thead><tr><th>目的网段</th><th>下一跳</th><th style="width:80px">操作</th></tr></thead>
+          <tbody id="routeRows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="page" id="page-sessions" hidden>
+      <div class="page-head"><h2>会话监控</h2><span class="sub">在线客户端 · 每 5 秒自动刷新</span></div>
+      <div class="card">
+        <table>
+          <thead><tr><th>账户</th><th>会话 ID</th><th>UDP 地址</th><th>隧道 IP</th><th>空闲</th><th>最后活跃</th><th style="width:80px">操作</th></tr></thead>
+          <tbody id="sessionRows"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="toasts"></div>
+
+<script>
+"use strict";
+let auth = ""; // 内存中的 Basic Auth 凭据，不做持久化
+
+const $ = id => document.getElementById(id);
+
+/* ---------- 导航 ---------- */
+for (const btn of document.querySelectorAll(".nav-item[data-page]")) {
+  btn.onclick = () => showPage(btn.dataset.page);
+}
+function showPage(name) {
+  for (const b of document.querySelectorAll(".nav-item[data-page]")) {
+    b.classList.toggle("active", b.dataset.page === name);
+  }
+  for (const p of document.querySelectorAll(".page")) {
+    p.hidden = p.id !== "page-" + name;
+  }
+}
+
+/* ---------- 通用 ---------- */
+function toast(msg, isErr) {
+  const el = document.createElement("div");
+  el.className = "toast" + (isErr ? " err" : "");
+  el.textContent = msg;
+  $("toasts").appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+function setConn(ok, text) {
+  const c = $("conn");
+  c.className = "conn " + (ok ? "ok" : "err");
+  $("connText").textContent = text;
+}
+
+async function api(method, path, body) {
+  const opts = { method, headers: { "Authorization": "Basic " + auth } };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const resp = await fetch(path, opts);
+  if (resp.status === 401) {
+    auth = "";
+    throw new Error("unauthorized");
+  }
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.error || ("HTTP " + resp.status));
+  return data;
+}
+
+function emptyRow(tbody, colspan) {
+  tbody.replaceChildren();
+  const tr = document.createElement("tr");
+  const td = document.createElement("td");
+  td.colSpan = colspan;
+  td.className = "empty";
+  td.textContent = "暂无数据";
+  tr.appendChild(td);
+  tbody.appendChild(tr);
+}
+
+function fmtIdle(sec) {
+  if (sec < 60) return sec + " 秒";
+  if (sec < 3600) return Math.floor(sec / 60) + " 分钟";
+  return Math.floor(sec / 3600) + " 小时";
+}
+
+/* ---------- 登录 / 退出 ---------- */
+function enterApp() {
+  $("loginView").hidden = true;
+  $("appView").hidden = false;
+  setConn(true, "已连接");
+  refreshAll();
+}
+function backToLogin(reason) {
+  auth = "";
+  $("appView").hidden = true;
+  $("loginView").hidden = false;
+  $("loginError").textContent = reason || "";
+  $("pass").value = "";
+}
+
+function doLogin() {
+  const u = $("user").value.trim(), p = $("pass").value;
+  if (!u || !p) { $("loginError").textContent = "请输入用户名和密码"; return; }
+  auth = btoa(u + ":" + p);
+  api("GET", "/api/status").then(enterApp).catch(e => {
+    auth = "";
+    $("loginError").textContent = e.message === "unauthorized" ? "用户名或密码错误" : "连接失败：" + e.message;
+  });
+}
+$("loginBtn").onclick = doLogin;
+$("pass").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+$("user").addEventListener("keydown", e => { if (e.key === "Enter") $("pass").focus(); });
+$("logout").onclick = () => backToLogin();
+
+/* ---------- 渲染 ---------- */
+function renderStatus(s) {
+  const tiles = [
+    ["UDP 监听", s.addr, ""],
+    ["运行时长", fmtIdle(s.uptime_seconds), ""],
+    ["账户认证", s.auth_enabled ? "已开启" : "未开启", s.auth_enabled ? "on" : "off"],
+    ["在线会话", s.session_count, ""],
+    ["路由条目", s.route_count, ""],
+    ["认证账户", s.user_count, ""],
+  ];
+  const box = $("tiles");
+  box.replaceChildren();
+  for (const [k, v, cls] of tiles) {
+    const tile = document.createElement("div");
+    tile.className = "tile";
+    const ke = document.createElement("div"); ke.className = "k"; ke.textContent = k;
+    const ve = document.createElement("div"); ve.className = "v " + cls; ve.textContent = String(v);
+    tile.append(ke, ve);
+    box.appendChild(tile);
+  }
+  $("userNotice").classList.toggle("show", !s.auth_enabled);
+}
+
+function renderUsers(data) {
+  const tbody = $("userRows");
+  tbody.replaceChildren();
+  if (!data.accounts.length) { emptyRow(tbody, 2); return; }
+  for (const account of data.accounts) {
+    const tr = document.createElement("tr");
+    const td = document.createElement("td"); td.textContent = account;
+    const tdBtn = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.className = "btn mini"; btn.textContent = "删除";
+    btn.onclick = async () => {
+      try { await api("DELETE", "/api/users/" + encodeURIComponent(account)); toast("已删除账户 " + account); loadUsers(); }
+      catch (e) { toast(e.message, true); }
+    };
+    tdBtn.appendChild(btn);
+    tr.append(td, tdBtn);
+    tbody.appendChild(tr);
+  }
+}
+
+function renderRoutes(data) {
+  const tbody = $("routeRows");
+  tbody.replaceChildren();
+  if (!data.routes.length) { emptyRow(tbody, 3); return; }
+  for (const r of data.routes) {
+    const tr = document.createElement("tr");
+    for (const v of [r.dst, r.via]) {
+      const td = document.createElement("td"); td.textContent = v; tr.appendChild(td);
+    }
+    const tdBtn = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.className = "btn mini"; btn.textContent = "删除";
+    btn.onclick = async () => {
+      try { await api("DELETE", "/api/routes?dst=" + encodeURIComponent(r.dst)); toast("已删除路由 " + r.dst); loadRoutes(); }
+      catch (e) { toast(e.message, true); }
+    };
+    tdBtn.appendChild(btn);
+    tr.appendChild(tdBtn);
+    tbody.appendChild(tr);
+  }
+}
+
+function renderSessions(data) {
+  const tbody = $("sessionRows");
+  tbody.replaceChildren();
+  const badge = $("sessionBadge");
+  badge.hidden = !data.sessions.length;
+  badge.textContent = data.sessions.length;
+  if (!data.sessions.length) { emptyRow(tbody, 7); return; }
+  for (const s of data.sessions) {
+    const tr = document.createElement("tr");
+    for (const v of [s.account || "-", s.session_id, s.addr, s.tunnel_ips.join(", "), fmtIdle(s.idle_seconds), s.last_active]) {
+      const td = document.createElement("td"); td.textContent = v; tr.appendChild(td);
+    }
+    const tdBtn = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.className = "btn mini"; btn.textContent = "踢下线";
+    btn.onclick = async () => {
+      try { await api("DELETE", "/api/sessions/" + encodeURIComponent(s.session_id)); toast("会话已删除 " + s.session_id); loadOverview(); }
+      catch (e) { toast(e.message, true); }
+    };
+    tdBtn.appendChild(btn);
+    tr.appendChild(tdBtn);
+    tbody.appendChild(tr);
+  }
+}
+
+/* ---------- 数据加载 ---------- */
+async function loadOverview() {
+  const [status, sessions] = await Promise.all([api("GET", "/api/status"), api("GET", "/api/sessions")]);
+  renderStatus(status);
+  renderSessions(sessions);
+}
+async function loadUsers() { renderUsers(await api("GET", "/api/users")); }
+async function loadRoutes() { renderRoutes(await api("GET", "/api/routes")); }
+
+async function refreshAll() {
+  if (!auth) return;
+  try {
+    await Promise.all([loadOverview(), loadUsers(), loadRoutes()]);
+    setConn(true, "已连接");
+  } catch (e) {
+    if (e.message === "unauthorized") { backToLogin("登录已失效，请重新登录"); return; }
+    setConn(false, "连接失败");
+  }
+}
+
+/* ---------- 表单 ---------- */
+$("userForm").onsubmit = async e => {
+  e.preventDefault();
+  try {
+    await api("POST", "/api/users", { account: $("newAccount").value.trim(), password: $("newPassword").value });
+    toast("账户已添加");
+    $("newAccount").value = ""; $("newPassword").value = "";
+    loadUsers();
+  } catch (e2) { toast(e2.message, true); }
+};
+
+$("routeForm").onsubmit = async e => {
+  e.preventDefault();
+  try {
+    const r = await api("POST", "/api/routes", { dst: $("newDst").value.trim(), via: $("newVia").value.trim() });
+    toast("路由已添加 " + r.dst);
+    $("newDst").value = ""; $("newVia").value = "";
+    loadRoutes();
+  } catch (e2) { toast(e2.message, true); }
+};
+
+setInterval(refreshAll, 5000);
+</script>
+</body>
+</html>
