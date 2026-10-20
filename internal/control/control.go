@@ -4,17 +4,27 @@ package control
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"sync"
 	"time"
 
 	"open-tunnel/internal/core"
+)
+
+const (
+	// sessionCookieName 会话 Cookie 名称。
+	sessionCookieName = "open-tunnel-session"
+	// sessionTTL 会话有效期，滑动续期：每次请求通过校验都会顺延。
+	sessionTTL = 24 * time.Hour
 )
 
 type Cfg struct {
@@ -28,6 +38,9 @@ type Cfg struct {
 
 type Control struct {
 	cfg Cfg
+
+	sessionsLock sync.Mutex
+	sessions     map[string]time.Time // 会话令牌 -> 过期时间
 }
 
 func New(cfg Cfg) (*Control, error) {
@@ -49,7 +62,7 @@ func New(cfg Cfg) (*Control, error) {
 	if cfg.Server == nil {
 		return nil, errors.New("control server is nil")
 	}
-	return &Control{cfg: cfg}, nil
+	return &Control{cfg: cfg, sessions: make(map[string]time.Time)}, nil
 }
 
 // TLS 报告控制面是否以 HTTPS 方式运行。
@@ -95,16 +108,29 @@ func (c *Control) Serve(ln net.Listener, ctx context.Context) error {
 	}
 }
 
-// Handler 返回带 Basic Auth 的根处理器，供 Serve 使用，也便于测试。
+// Handler 返回根处理器，供 Serve 使用，也便于测试。
+// 登录页面与登录/登出接口不做认证，其余 /api/ 接口经会话 Cookie 保护。
 func (c *Control) Handler() http.Handler {
-	return c.basicAuth(c.routes())
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if _, err := w.Write(indexHTML); err != nil {
+			log.Println(err)
+		}
+	})
+	mux.HandleFunc("POST /api/login", c.handleLogin)
+	mux.HandleFunc("POST /api/logout", c.handleLogout)
+	mux.Handle("/api/", c.requireSession(c.routes()))
+	return mux
 }
 
-func (c *Control) basicAuth(next http.Handler) http.Handler {
+// requireSession 校验会话 Cookie，未登录或已过期返回 401。
+// 不返回 WWW-Authenticate 头：该头会让浏览器弹出原生 Basic Auth 对话框；
+// 前端 fetch 收到 401 自行回到登录页。
+func (c *Control) requireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		username, password, ok := r.BasicAuth()
-		if !ok || !constantTimeEqual(c.cfg.Username, username) || !constantTimeEqual(c.cfg.Password, password) {
-			w.Header().Set("WWW-Authenticate", `Basic realm="open-tunnel control"`)
+		cookie, err := r.Cookie(sessionCookieName)
+		if err != nil || !c.touchSession(cookie.Value) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
@@ -120,6 +146,72 @@ func constantTimeEqual(a, b string) bool {
 	return subtle.ConstantTimeCompare(ha[:], hb[:]) == 1
 }
 
+// createSession 创建服务端会话并通过 Set-Cookie 下发令牌。
+func (c *Control) createSession(w http.ResponseWriter) error {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return err
+	}
+	token := hex.EncodeToString(buf)
+	c.sessionsLock.Lock()
+	c.purgeSessionsLocked()
+	c.sessions[token] = time.Now().Add(sessionTTL)
+	c.sessionsLock.Unlock()
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(sessionTTL.Seconds()),
+		HttpOnly: true, // JS 不可读，防止 XSS 窃取
+		Secure:   c.TLS(),
+		SameSite: http.SameSiteStrictMode, // 顺带防 CSRF
+	})
+	return nil
+}
+
+// touchSession 校验会话并滑动续期，令牌为空、不存在或已过期时返回 false。
+func (c *Control) touchSession(token string) bool {
+	if token == "" {
+		return false
+	}
+	c.sessionsLock.Lock()
+	defer c.sessionsLock.Unlock()
+	expiry, ok := c.sessions[token]
+	if !ok || !time.Now().Before(expiry) {
+		return false
+	}
+	c.sessions[token] = time.Now().Add(sessionTTL)
+	return true
+}
+
+// deleteSession 注销会话并让浏览器 Cookie 失效。
+func (c *Control) deleteSession(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		c.sessionsLock.Lock()
+		delete(c.sessions, cookie.Value)
+		c.sessionsLock.Unlock()
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   c.TLS(),
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// purgeSessionsLocked 清理过期会话，调用方需持有 sessionsLock。
+func (c *Control) purgeSessionsLocked() {
+	now := time.Now()
+	for token, expiry := range c.sessions {
+		if !now.Before(expiry) {
+			delete(c.sessions, token)
+		}
+	}
+}
+
 // userStore 返回数据面的账户存储；未开启认证时返回 nil。
 func (c *Control) userStore() core.UserStore {
 	return c.cfg.Server.UserStore
@@ -127,12 +219,6 @@ func (c *Control) userStore() core.UserStore {
 
 func (c *Control) routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if _, err := w.Write(indexHTML); err != nil {
-			log.Println(err)
-		}
-	})
 	mux.HandleFunc("GET /api/status", c.handleStatus)
 	mux.HandleFunc("GET /api/sessions", c.handleSessions)
 	mux.HandleFunc("DELETE /api/sessions/{sessionId}", c.handleRemoveSession)

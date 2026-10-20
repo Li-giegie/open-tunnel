@@ -32,6 +32,35 @@ func decodeJSON(r *http.Request, v any) error {
 	return json.NewDecoder(r.Body).Decode(v)
 }
 
+type loginReq struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// handleLogin 校验控制台账号密码，成功则创建服务端会话并经 Set-Cookie 下发。
+func (c *Control) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var req loginReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if !constantTimeEqual(c.cfg.Username, req.Username) || !constantTimeEqual(c.cfg.Password, req.Password) {
+		writeError(w, http.StatusUnauthorized, "invalid username or password")
+		return
+	}
+	if err := c.createSession(w); err != nil {
+		writeError(w, http.StatusInternalServerError, "create session: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleLogout 注销当前会话。
+func (c *Control) handleLogout(w http.ResponseWriter, r *http.Request) {
+	c.deleteSession(w, r)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 type statusResp struct {
 	Addr          string `json:"addr"`
 	ControlAddr   string `json:"control_addr"`
