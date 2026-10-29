@@ -71,6 +71,9 @@ func (c *Client) Serve(ctx context.Context) error {
 	if err = c.Auth(conn); err != nil {
 		return err
 	}
+	defer func() {
+		conn.Write((&Packet{Cmd: CmdSessionClose, SessionId: c.sessionId}).Encode(nil))
+	}()
 	log.Println("创建网卡")
 	iface, err := CreateInterface(c.interfaceName)
 	if err != nil {
@@ -123,7 +126,7 @@ func (c *Client) Serve(ctx context.Context) error {
 	case err := <-healthDone:
 		return err
 	case <-c.ctx.Done():
-		return nil
+		return err
 	}
 }
 

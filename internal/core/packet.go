@@ -21,6 +21,8 @@ const (
 	CmdQuestionIP
 	CmdAnswerIP
 
+	CmdSessionClose
+
 	CmdSessionInvalid
 )
 
@@ -42,6 +44,8 @@ func (c Cmd) String() string {
 		return "AnswerIP"
 	case CmdSessionInvalid:
 		return "SessionInvalid"
+	case CmdSessionClose:
+		return "SessionClose"
 	default:
 		return "Unknown"
 	}

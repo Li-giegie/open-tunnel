@@ -215,6 +215,9 @@ func (s *Server) Handle(ctx *Context) error {
 			}
 			s.SetSessionIP(ctx.SessionId, net.IPv4(ctx.Data[0], ctx.Data[1], ctx.Data[2], ctx.Data[3]))
 			return nil
+		case CmdSessionClose:
+			s.RemoveSession(ctx.SessionId)
+			return nil
 		default:
 			log.Println("Unknown command:", ctx.Cmd)
 			return nil
