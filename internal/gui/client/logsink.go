@@ -27,7 +27,7 @@ type LogSink struct {
 	ch     chan string
 	mw     *walk.MainWindow
 	te     *walk.TextEdit
-	onLine func(text string) // 每批日志的回调,在 pump 协程调用
+	onLine func(text string) // 每批日志的回调,经 Synchronize 在 UI 线程调用
 }
 
 func NewLogSink(mw *walk.MainWindow, te *walk.TextEdit, onLine func(string)) *LogSink {
@@ -61,10 +61,10 @@ func (s *LogSink) pump() {
 		s.mw.Synchronize(func() {
 			s.te.AppendText(text)
 			s.te.ScrollToCaret()
+			if s.onLine != nil {
+				s.onLine(text)
+			}
 		})
-		if s.onLine != nil {
-			s.onLine(text)
-		}
 	}
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()

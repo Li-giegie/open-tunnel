@@ -8,12 +8,11 @@
         processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
     </dependentAssembly>
   </dependency>
-  <!-- TODO: 正式发布时改回 requireAdministrator(创建/删除 Wintun 网卡、netsh 均需管理员)。
-       当前为 asInvoker,便于无管理员权限时先预览界面,点"连接"会在创建网卡一步报错 -->
+  <!-- 创建/删除 Wintun 网卡、netsh 均需管理员权限,启动即请求提权 -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>

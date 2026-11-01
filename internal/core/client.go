@@ -23,6 +23,7 @@ type CliCfg struct {
 	Addr          string
 	Account       string
 	Password      string
+	AuthTimeout   time.Duration
 	Keepalive     time.Duration
 	Timeout       time.Duration
 }
@@ -33,6 +34,7 @@ func NewClient(c CliCfg) *Client {
 		account:       c.Account,
 		password:      c.Password,
 		updateTime:    time.Now(),
+		authTimeout:   c.AuthTimeout,
 		keepalive:     c.Keepalive,
 		timeout:       c.Timeout,
 		interfaceAddr: c.InterfaceAddr,
@@ -47,6 +49,7 @@ type Client struct {
 	password      string
 	sessionId     uint64
 	updateTime    time.Time
+	authTimeout   time.Duration
 	keepalive     time.Duration
 	timeout       time.Duration
 	ctx           context.Context
@@ -132,8 +135,12 @@ func (c *Client) Serve(ctx context.Context) error {
 
 func (c *Client) Auth(conn *net.UDPConn) error {
 
-	timeout := make(chan struct{})
-	time.AfterFunc(time.Minute, func() { close(timeout) })
+	timeoutCh := make(chan struct{})
+	timeout := c.authTimeout
+	if timeout == 0 {
+		timeout = 15 * time.Second
+	}
+	time.AfterFunc(timeout, func() { close(timeoutCh) })
 
 	done := make(chan error, 1)
 	go func() {
@@ -168,7 +175,7 @@ func (c *Client) Auth(conn *net.UDPConn) error {
 	}()
 
 	select {
-	case <-timeout:
+	case <-timeoutCh:
 		return errors.New("auth timeout")
 	case err := <-done:
 		return err

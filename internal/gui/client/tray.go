@@ -10,8 +10,8 @@ import (
 // 使用系统预置图标,无需自定义 .ico 资源。
 type Tray struct {
 	ni       *walk.NotifyIcon
-	quitting bool  // 用户已请求退出(Closing 处理器读取)
-	notified bool  // 是否已提示过"已最小化到托盘"
+	quitting bool // 用户已请求退出(Closing 处理器读取)
+	notified bool // 是否已提示过"已最小化到托盘"
 }
 
 func NewTray(mw *walk.MainWindow, onExit func()) (*Tray, error) {

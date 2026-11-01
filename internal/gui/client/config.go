@@ -14,24 +14,26 @@ import (
 // Cfg 是 GUI 的持久化配置,字段与 core.CliCfg 一一对应,
 // 时间类字段以秒存储,连接时转换为 time.Duration。
 type Cfg struct {
-	Addr          string `json:"addr"`
-	Account       string `json:"account"`
-	Password      string `json:"password"`
-	KeepaliveSec  int    `json:"keepalive_sec"`
-	TimeoutSec    int    `json:"timeout_sec"`
-	InterfaceName string `json:"interface_name"`
-	InterfaceAddr string `json:"interface_addr"`
-	InterfaceMTU  int    `json:"interface_mtu"`
+	Addr           string `json:"addr"`
+	Account        string `json:"account"`
+	Password       string `json:"password"`
+	AuthTimeoutSec int    `json:"auth_timeout_sec"`
+	KeepaliveSec   int    `json:"keepalive_sec"`
+	TimeoutSec     int    `json:"timeout_sec"`
+	InterfaceName  string `json:"interface_name"`
+	InterfaceAddr  string `json:"interface_addr"`
+	InterfaceMTU   int    `json:"interface_mtu"`
 }
 
 func defaultCfg() Cfg {
 	return Cfg{
-		Addr:          "127.0.0.1:9000",
-		KeepaliveSec:  15,
-		TimeoutSec:    120,
-		InterfaceName: "tun0",
-		InterfaceAddr: "192.168.10.1/24",
-		InterfaceMTU:  1450,
+		Addr:           "127.0.0.1:9000",
+		AuthTimeoutSec: 15,
+		KeepaliveSec:   15,
+		TimeoutSec:     120,
+		InterfaceName:  "tun0",
+		InterfaceAddr:  "192.168.10.1/24",
+		InterfaceMTU:   1450,
 	}
 }
 
@@ -41,6 +43,7 @@ func (c Cfg) ToCore() core.CliCfg {
 		Addr:          c.Addr,
 		Account:       c.Account,
 		Password:      c.Password,
+		AuthTimeout:   time.Duration(c.AuthTimeoutSec) * time.Second,
 		Keepalive:     time.Duration(c.KeepaliveSec) * time.Second,
 		Timeout:       time.Duration(c.TimeoutSec) * time.Second,
 		InterfaceName: c.InterfaceName,
@@ -74,6 +77,9 @@ func LoadConfig() Cfg {
 		return defaultCfg()
 	}
 	// 防御异常值
+	if c.AuthTimeoutSec <= 0 {
+		c.AuthTimeoutSec = 15
+	}
 	if c.KeepaliveSec <= 0 {
 		c.KeepaliveSec = 15
 	}
