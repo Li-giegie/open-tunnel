@@ -34,12 +34,12 @@ func NewClient(c CliCfg) *Client {
 		account:       c.Account,
 		password:      c.Password,
 		updateTime:    time.Now(),
-		authTimeout:   c.AuthTimeout,
-		keepalive:     c.Keepalive,
-		timeout:       c.Timeout,
+		authTimeout:   Default(c.AuthTimeout, time.Second*15),
+		keepalive:     Default(c.Keepalive, time.Second*30),
+		timeout:       Default(c.Timeout, time.Minute*2),
 		interfaceAddr: c.InterfaceAddr,
-		interfaceMTU:  c.InterfaceMTU,
-		interfaceName: c.InterfaceName,
+		interfaceMTU:  Default(c.InterfaceMTU, 1450),
+		interfaceName: Default(c.InterfaceName, "tun0"),
 	}
 }
 
@@ -136,11 +136,7 @@ func (c *Client) Serve(ctx context.Context) error {
 func (c *Client) Auth(conn *net.UDPConn) error {
 
 	timeoutCh := make(chan struct{})
-	timeout := c.authTimeout
-	if timeout == 0 {
-		timeout = 15 * time.Second
-	}
-	time.AfterFunc(timeout, func() { close(timeoutCh) })
+	time.AfterFunc(c.authTimeout, func() { close(timeoutCh) })
 
 	done := make(chan error, 1)
 	go func() {
@@ -183,36 +179,24 @@ func (c *Client) Auth(conn *net.UDPConn) error {
 }
 
 func (c *Client) handleHealth(conn *net.UDPConn) error {
-	timeout := c.timeout
-	if timeout <= 0 {
-		timeout = time.Minute * 2
-	}
-	timeoutTicker := time.NewTicker(timeout + 3*time.Second)
-	defer timeoutTicker.Stop()
-
-	keepalive := c.keepalive
-	if keepalive <= 0 {
-		keepalive = 15 * time.Second
-	}
-	keepaliveTicker := time.NewTicker(keepalive)
+	keepaliveTicker := time.NewTicker(c.keepalive)
 	defer keepaliveTicker.Stop()
 
-	log.Println(timeout, keepalive)
-
 	data := (&Packet{Cmd: CmdPing, SessionId: c.sessionId}).Encode(nil)
+
 	for {
 		select {
 		case <-keepaliveTicker.C:
-			if time.Since(c.updateTime) > keepalive {
+			sub := time.Since(c.updateTime)
+			if sub >= c.timeout {
+				return errors.New("health err: timeout")
+			}
+			if sub >= c.keepalive {
 				_, err := conn.Write(data)
 				if err != nil {
 					return err
 				}
 				log.Println("发送ping")
-			}
-		case <-timeoutTicker.C:
-			if time.Now().Sub(c.updateTime) > timeout {
-				return errors.New("health err: timeout")
 			}
 		case <-c.ctx.Done():
 			return nil

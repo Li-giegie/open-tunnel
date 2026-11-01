@@ -3,3 +3,4 @@ open-tunnel
 .*
 !.gitignore
 *.dll
+internal/gui/native/open-tunnel-client/wintun

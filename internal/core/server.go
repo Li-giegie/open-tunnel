@@ -29,8 +29,8 @@ func NewServer(c SrvCfg) *Server {
 		addr:                c.Addr,
 		UserStore:           c.UserStore,
 		Session:             NewSession(),
-		checkHealthInterval: c.CheckHealthInterval,
-		checkHealthTimeout:  c.CheckHealthTimeout,
+		checkHealthInterval: Default(c.CheckHealthInterval, time.Minute),
+		checkHealthTimeout:  Default(c.CheckHealthTimeout, time.Minute*2),
 		hash:                h,
 		startTime:           time.Now(),
 	}
@@ -120,23 +120,15 @@ func (s *Server) Serve(ctx context.Context) error {
 }
 
 func (s *Server) checkHealth() {
-	checkHealthTimeout := s.checkHealthTimeout
-	if checkHealthTimeout <= 0 {
-		checkHealthTimeout = time.Minute * 2
-	}
-	checkHealthInterval := s.checkHealthInterval
-	if checkHealthInterval <= 0 {
-		checkHealthInterval = time.Minute
-	}
 
-	ticker := time.NewTicker(checkHealthInterval)
+	ticker := time.NewTicker(s.checkHealthInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			var removeSessionIds []uint64
 			s.RangeSessions(func(sessionId uint64, account string, addr *net.UDPAddr, updateTime time.Time, ips []net.IP) bool {
-				if time.Since(updateTime) > checkHealthTimeout {
+				if time.Since(updateTime) > s.checkHealthTimeout {
 					removeSessionIds = append(removeSessionIds, sessionId)
 				}
 				return true
